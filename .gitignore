@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+eggs/
+*.egg-info/
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Generated outputs
+outputs/
+logs/
+
+# Models (auto-download)
+*.pt
+models/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/
