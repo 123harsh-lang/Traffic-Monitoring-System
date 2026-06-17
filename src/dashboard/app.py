@@ -263,163 +263,277 @@ def generate_alert(congestion_level: str, vehicle_count: int, traffic_flow: str)
 # MAIN DASHBOARD
 # =============================================================================
 
-# =============================================================================
-# MAIN DASHBOARD
-# =============================================================================
-
 def main():
-    # 1. SIDEBAR CONTROLS & CONFIGURATION
-    st.sidebar.markdown("### 🎛️ Control Panel")
+    """Main dashboard function."""
     
-    # Get available test video feeds
-    video_options = get_video_files()
-    if not video_options:
-        st.sidebar.error("❌ No video files found in 'test_videos/' directory.")
-        st.info("Please upload or add video files (.mp4, .avi, .mov) to your 'test_videos' folder.")
-        return
-
-    # User selections
-    selected_video = st.sidebar.selectbox(
-        "Select Traffic Feed",
-        options=video_options,
-        format_func=lambda x: x.name
-    )
+    # Header
+    st.markdown('<h1 class="main-header">🚗 Smart Traffic Monitoring System</h1>', unsafe_allow_html=True)
+    st.markdown("---")
     
-    # Connect input values to session state configuration
-    st.session_state['num_lanes'] = st.sidebar.slider(
-        "Monitored Lanes", 
-        min_value=1, 
-        max_value=6, 
-        value=st.session_state['num_lanes']
-    )
-
-    # Playback Control Buttons
-    col_play, col_stop = st.sidebar.columns(2)
-    if col_play.button("▶️ Start Stream", use_container_width=True):
-        st.session_state['processing'] = True
-    if col_stop.button("⏹️ Stop Stream", use_container_width=True):
-        st.session_state['processing'] = False
-
-    # 2. HEADER DISPLAY
-    st.markdown(f"<div class='main-header'>{config.PAGE_TITLE}</div>", unsafe_allow_html=True)
-    
-    # 3. DASHBOARD METRICS LAYOUT (Top Row)
-    metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
-    
-    with metric_col1:
-        count_placeholder = st.empty()
-    with metric_col2:
-        speed_placeholder = st.empty()
-    with metric_col3:
-        flow_placeholder = st.empty()
-    with metric_col4:
-        congestion_placeholder = st.empty()
-
-    # 4. MAIN CONTENT LAYOUT (Video & Charts Area)
-    content_col1, content_col2 = st.columns([2, 1])
-    
-    with content_col1:
-        st.markdown("### 📹 Live Analytics Feed")
-        # The critical structural box that makes the video move without shifting UI elements
-        video_placeholder = st.empty() 
+    # Sidebar
+    with st.sidebar:
+        st.header("⚙️ Control Panel")
         
-    with content_col2:
-        st.markdown("### ⚠️ System Alerts")
-        alert_placeholder = st.empty()
-        st.markdown("### 📊 Distribution")
-        chart_placeholder = st.empty()
-
-    # 5. INITIALIZE TRACKING MODELS
-    detector = load_detector()
-    if st.session_state['motion_tracker'] is None:
-        st.session_state['motion_tracker'] = MotionTracker()
-
-    # 6. LIVE VIDEO STREAMING RUNTIME LOOP
-    if st.session_state['processing'] and selected_video:
-        # Open video capture pipe using OpenCV
-        cap = cv2.VideoCapture(str(selected_video))
+        # Video source selection
+        st.subheader("📹 Video Source")
         
-        while cap.isOpened() and st.session_state['processing']:
-            ret, frame = cap.read()
+        video_options = ["Test Videos", "Upload Video"]
+        video_source = st.selectbox("Select source", video_options)
+        
+        video_path = None
+        
+        if video_source == "Test Videos":
+            all_videos = get_video_files()
+            if all_videos:
+                video_names = [v.name for v in all_videos]
+                selected = st.selectbox("Select video", video_names)
+                for v in all_videos:
+                    if v.name == selected:
+                        video_path = v
+                        break
+            else:
+                st.warning("No test videos found in test_videos/")
+        
+        elif video_source == "Upload Video":
+            uploaded = st.file_uploader("Upload video", type=['mp4', 'avi', 'mov'])
+            if uploaded:
+                temp_path = config.OUTPUT_DIR / "temp_upload.mp4"
+                temp_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(temp_path, 'wb') as f:
+                    f.write(uploaded.read())
+                video_path = temp_path
+        
+        st.markdown("---")
+        
+        # Processing controls
+        st.subheader("🎮 Controls")
+        
+        process_btn = st.button("▶️ Start Processing", use_container_width=True)
+        stop_btn = st.button("⏹️ Stop", use_container_width=True)
+        reset_btn = st.button("🔄 Reset", use_container_width=True)
+        
+        if stop_btn:
+            st.session_state.processing = False
+        
+        if reset_btn:
+            st.session_state.count_history = []
+            st.session_state.alerts = []
+            st.session_state.vehicle_count = 0
+            st.session_state.congestion_level = 'N/A'
+            st.session_state.fps = 0.0
+            st.session_state.vehicle_types = {'car': 0, 'motorcycle': 0, 'bus': 0, 'truck': 0}
+            st.session_state.frame_idx = 0
+            st.session_state.avg_speed = 0.0
+            st.session_state.traffic_flow = 'N/A'
+            if st.session_state.motion_tracker:
+                st.session_state.motion_tracker.reset()
+        
+        st.markdown("---")
+        
+        # Settings
+        st.subheader("⚙️ Settings")
+        frame_skip = st.slider("Frame Skip", 1, 10, 2)
+        
+        # Lane configuration
+        num_lanes = st.slider("Number of Lanes", 1, 8, 2, 
+            help="Set the number of lanes visible in the video")
+        st.session_state.num_lanes = num_lanes
+        
+        st.markdown("---")
+        
+        # Thresholds info (per lane)
+        st.subheader("📊 Congestion Thresholds")
+        st.markdown(f"""
+        **Per Lane** (×{num_lanes} lanes):
+        - 🟢 **Light**: 0-2/lane (0-{2*num_lanes} total)
+        - 🟡 **Medium**: 3-5/lane ({3*num_lanes}-{5*num_lanes} total)
+        - 🔴 **Heavy**: 6+/lane ({6*num_lanes}+ total)
+        
+        **Speed Adjustment**:
+        - Stopped traffic → upgrades level
+        """)
+        
+        st.markdown("---")
+        
+        # System status - simple display
+        st.subheader("📊 System Status")
+        detector_status = "🟢 Active" if st.session_state.detector is not None else "🔴 Inactive"
+        st.markdown(f"**Vehicle Detector:** {detector_status} | **FPS:** {st.session_state.fps:.1f}")
+    
+    # Main content area
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.subheader("📺 Live Feed")
+        video_placeholder = st.empty()
+        
+        if st.session_state.current_frame is not None:
+            video_placeholder.image(
+                cv2.cvtColor(st.session_state.current_frame, cv2.COLOR_BGR2RGB),
+                use_container_width=True
+            )
+        else:
+            video_placeholder.info("Select a video and click 'Start Processing'")
+    
+    with col2:
+        st.subheader("📈 Real-time Metrics")
+        
+        # Congestion gauge
+        CongestionGauge(st.session_state.congestion_level, key="main_gauge")
+        
+        # Metrics
+        m1, m2 = st.columns(2)
+        with m1:
+            st.metric("🚗 Vehicles", st.session_state.vehicle_count)
+        with m2:
+            st.metric("⚡ FPS", f"{st.session_state.fps:.1f}")
+        
+        # Speed and flow metrics
+        st.markdown("---")
+        st.subheader("🚦 Traffic Flow")
+        
+        speed = st.session_state.avg_speed
+        flow = st.session_state.traffic_flow
+        
+        # Speed indicator with color
+        if flow == "Stopped":
+            speed_class = "speed-stopped"
+        elif flow == "Slow":
+            speed_class = "speed-slow"
+        else:
+            speed_class = "speed-normal"
+        
+        st.markdown(f"""
+        <div class="{speed_class} speed-metric">
+            <strong>Avg Speed:</strong> {speed:.0f}<br>
+            <strong>Flow:</strong> {flow}
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Moving vs stopped
+        m3, m4 = st.columns(2)
+        with m3:
+            st.metric("🚗 Moving", st.session_state.moving_count)
+        with m4:
+            st.metric("🛑 Stopped", st.session_state.stopped_count)
+    
+    st.markdown("---")
+    
+    # Charts section
+    chart_col1, chart_col2 = st.columns(2)
+    
+    with chart_col1:
+        st.subheader("📊 Vehicle Count Trend")
+        if st.session_state.count_history:
+            VehicleCountChart(st.session_state.count_history[-30:], key="main_chart")
+        else:
+            st.info("Data will appear when processing starts")
+    
+    with chart_col2:
+        st.subheader("🚙 Vehicle Types")
+        VehicleTypeDistribution(st.session_state.vehicle_types, key="main_types")
+    
+    st.markdown("---")
+    
+    # Alerts section
+    st.subheader("🚨 Alerts")
+    AlertBox(st.session_state.alerts[-5:] if st.session_state.alerts else [])
+    
+    # Processing logic
+    if process_btn and video_path and video_path.exists():
+        st.session_state.processing = True
+        st.session_state.count_history = []
+        st.session_state.frame_idx = 0
+        
+        # Load detector
+        if st.session_state.detector is None:
+            with st.spinner("Loading vehicle detector..."):
+                st.session_state.detector = load_detector()
+        
+        # Initialize motion tracker
+        st.session_state.motion_tracker = MotionTracker()
+        
+        # Process video
+        if st.session_state.detector is not None:
+            cap = cv2.VideoCapture(str(video_path))
+            frame_count = 0
+            start_time = time.time()
             
-            # Auto-loop video clip seamlessly when it reaches the finish frame
-            if not ret:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                continue
+            progress_bar = st.progress(0)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            
+            # Accumulate types
+            accumulated_types = {'car': 0, 'motorcycle': 0, 'bus': 0, 'truck': 0}
+            
+            while cap.isOpened() and st.session_state.processing:
+                ret, frame = cap.read()
                 
-            # Process single frame through your machine learning & motion tracking pipelines
-            annotated_frame, metrics = process_frame(
-                frame, 
-                detector, 
-                st.session_state['motion_tracker'], 
-                num_lanes=st.session_state['num_lanes']
-            )
+                if not ret:
+                    break
+                
+                # Skip frames
+                if frame_count % frame_skip != 0:
+                    frame_count += 1
+                    continue
+                
+                # Process frame with motion tracking
+                annotated, results = process_frame(
+                    frame, 
+                    st.session_state.detector,
+                    st.session_state.motion_tracker,
+                    st.session_state.num_lanes
+                )
+                
+                # Update accumulated types
+                for vtype, count in results['vehicle_types'].items():
+                    accumulated_types[vtype] += count
+                
+                # Update session state
+                st.session_state.current_frame = annotated
+                st.session_state.vehicle_count = results['vehicle_count']
+                st.session_state.vehicle_types = accumulated_types.copy()
+                st.session_state.congestion_level = results['congestion_level']
+                st.session_state.avg_speed = results['avg_speed']
+                st.session_state.stopped_count = results['stopped_count']
+                st.session_state.moving_count = results['moving_count']
+                st.session_state.traffic_flow = results['traffic_flow']
+                st.session_state.frame_idx += 1
+                
+                # Update history
+                st.session_state.count_history.append({
+                    'time': f"F{st.session_state.frame_idx}",
+                    'count': results['vehicle_count']
+                })
+                
+                # Check for alerts
+                alert = generate_alert(
+                    results['congestion_level'], 
+                    results['vehicle_count'],
+                    results['traffic_flow']
+                )
+                if alert:
+                    st.session_state.alerts.append(alert)
+                
+                # Calculate FPS
+                elapsed = time.time() - start_time
+                st.session_state.fps = (frame_count + 1) / max(elapsed, 0.001)
+                
+                # Update video display
+                video_placeholder.image(
+                    cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
+                    use_container_width=True
+                )
+                
+                # Update progress
+                progress_bar.progress(min(frame_count / max(total_frames, 1), 1.0))
+                
+                frame_count += 1
             
-            # Correct OpenCV BGR color standard to Web standard RGB
-            rgb_frame = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-            
-            # --- Live Overwrite Interface Update Cycle ---
-            
-            # Update the moving live video feed canvas
-            video_placeholder.image(rgb_frame, use_container_width=True)
-            
-            # Push pipeline tracking numbers into global state
-            st.session_state['vehicle_count'] = metrics['vehicle_count']
-            st.session_state['vehicle_types'] = metrics['vehicle_types']
-            st.session_state['congestion_level'] = metrics['congestion_level']
-            st.session_state['avg_speed'] = metrics['avg_speed']
-            st.session_state['stopped_count'] = metrics['stopped_count']
-            st.session_state['moving_count'] = metrics['moving_count']
-            st.session_state['traffic_flow'] = metrics['traffic_flow']
-            
-            # Log history lists for tracking graph structures
-            st.session_state['count_history'].append({
-                'time': datetime.now().strftime('%H:%M:%S'),
-                'count': metrics['vehicle_count']
-            })
-            # Keep history buffer capped at last 30 frames to protect browser memory
-            if len(st.session_state['count_history']) > 30:
-                st.session_state['count_history'].pop(0)
-
-            # Animate the high-level custom card wrappers in real-time
-            count_placeholder.metric("Vehicles Detected", f"{st.session_state['vehicle_count']} units")
-            speed_placeholder.metric("Average Traffic Speed", f"{st.session_state['avg_speed']:.1f} px/f")
-            flow_placeholder.metric("Current Traffic Flow", st.session_state['traffic_flow'])
-            congestion_placeholder.metric("Congestion Level", st.session_state['congestion_level'].upper())
-            
-            # Generate and push system alerts into container block
-            new_alert = generate_alert(
-                st.session_state['congestion_level'],
-                st.session_state['vehicle_count'],
-                st.session_state['traffic_flow']
-            )
-            if new_alert and new_alert not in st.session_state['alerts']:
-                st.session_state['alerts'].insert(0, new_alert)
-                if len(st.session_state['alerts']) > 5:
-                    st.session_state['alerts'].pop()
-                    
-            # Render your specific structural component layouts
-            with alert_placeholder.container():
-                for alert in st.session_state['alerts']:
-                    AlertBox(alert['type'], alert['message'], alert['time'])
-                    
-            with chart_placeholder.container():
-                VehicleTypeDistribution(st.session_state['vehicle_types'])
-
-            # Render historical path lines below the split framework blocks
-            st.markdown("### 📈 Historical Traffic Trends")
-            CongestionHistory(pd.DataFrame(st.session_state['count_history']))
-            
-            # Pacing control interval roughly mimicking a standard 30 FPS playback index
-            time.sleep(0.03)
-            
-        cap.release()
-        
-    else:
-        # Safe structural fallback screen state when system is paused or idle
-        video_placeholder.info("⏸️ Feed Idle. Click 'Start Stream' in the sidebar options panel to begin.")
+            cap.release()
+            st.session_state.processing = False
+            st.success("✅ Processing complete!")
+            st.rerun()
 
 
 if __name__ == "__main__":
     main()
-
